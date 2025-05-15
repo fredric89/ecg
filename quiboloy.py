@@ -1,61 +1,79 @@
 import streamlit as st
 import numpy as np
-import pandas as pd
 import scipy.signal as signal
-import matplotlib.pyplot as plt
+import soundfile as sf
+import tempfile
+import librosa
+import librosa.display
 import io
+import os
 
-st.title("1D ECG Signal Filtering App")
-st.markdown("Remove baseline wander and powerline noise from ECG data.")
+st.title("🎚️ Digital Music Equalizer")
+st.markdown("Adjust bass, midrange, and treble using FIR bandpass filters.")
 
-st.sidebar.header("Upload ECG Data")
-file = st.sidebar.file_uploader("Upload CSV File", type=["csv"])
+# Upload audio
+uploaded_file = st.sidebar.file_uploader("Upload Audio File (WAV/MP3)", type=["wav", "mp3"])
 
-# Bandpass filter settings
-lowcut = 0.5
-highcut = 40.0
-fs = st.sidebar.number_input("Sampling Rate (Hz)", min_value=50, max_value=1000, value=250)
-order = 4
+# Sliders for gain adjustment
+st.sidebar.header("Equalizer Settings (Gain in dB)")
+bass_gain = st.sidebar.slider("Bass (60–250 Hz)", -20, 20, 0)
+mid_gain = st.sidebar.slider("Midrange (250–4000 Hz)", -20, 20, 0)
+treble_gain = st.sidebar.slider("Treble (4k–10k Hz)", -20, 20, 0)
+
+fs_target = 44100  # Standard audio sampling rate
 
 @st.cache_data
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = signal.butter(order, [low, high], btype='band')
-    y = signal.filtfilt(b, a, data)
-    return y
+def fir_bandpass(lowcut, highcut, fs, numtaps=101):
+    nyq = fs / 2
+    taps = signal.firwin(numtaps, [lowcut / nyq, highcut / nyq], pass_zero=False)
+    return taps
 
-if file is not None:
-    # Load data
-    df = pd.read_csv(file)
-    column_names = df.columns.tolist()
-    ecg_col = st.selectbox("Select ECG Column", column_names)
-    ecg_data = df[ecg_col].values
+@st.cache_data
+def apply_filter(audio, taps):
+    return signal.lfilter(taps, 1.0, audio)
 
-    # Apply filtering
-    filtered_ecg = butter_bandpass_filter(ecg_data, lowcut, highcut, fs, order)
+if uploaded_file is not None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+        tmp.write(uploaded_file.read())
+        filepath = tmp.name
 
-    # Time axis
-    t = np.arange(len(ecg_data)) / fs
+    y, sr = librosa.load(filepath, sr=fs_target, mono=True)
+    duration = len(y) / sr
+    t = np.linspace(0, duration, len(y))
 
-    # Plotting
-    fig, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    ax[0].plot(t, ecg_data, label='Original ECG', color='gray')
-    ax[0].set_title("Original ECG Signal")
-    ax[0].set_ylabel("Amplitude")
-    ax[0].grid(True)
+    # Design FIR filters
+    bass_filt = fir_bandpass(60, 250, sr)
+    mid_filt = fir_bandpass(250, 4000, sr)
+    treble_filt = fir_bandpass(4000, 10000, sr)
 
-    ax[1].plot(t, filtered_ecg, label='Filtered ECG', color='green')
-    ax[1].set_title("Filtered ECG Signal (0.5–40 Hz Bandpass)")
-    ax[1].set_xlabel("Time (s)")
-    ax[1].set_ylabel("Amplitude")
-    ax[1].grid(True)
+    # Filter audio
+    bass = apply_filter(y, bass_filt)
+    mid = apply_filter(y, mid_filt)
+    treble = apply_filter(y, treble_filt)
 
+    # Apply gain (convert dB to linear scale)
+    bass *= 10**(bass_gain / 20)
+    mid *= 10**(mid_gain / 20)
+    treble *= 10**(treble_gain / 20)
+
+    # Combine filtered signals
+    equalized = bass + mid + treble
+    equalized = equalized / np.max(np.abs(equalized))  # Normalize
+
+    # Display waveform
+    st.subheader("Waveform of Equalized Audio")
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.plot(t, equalized, color='purple')
+    ax.set_title("Equalized Audio Signal")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Amplitude")
     st.pyplot(fig)
 
-    st.markdown("---")
-    st.markdown("### Commentary")
-    st.markdown("**QRS Visibility:** The QRS complexes should appear sharper and more prominent in the filtered ECG. The baseline drift and 50/60 Hz powerline interference are reduced, making features like R-peaks more discernible.")
+    # Save and playback
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as eq_audio:
+        sf.write(eq_audio.name, equalized, sr)
+        st.audio(eq_audio.name, format='audio/wav')
+
+    os.unlink(filepath)
 else:
-    st.info("Upload an ECG CSV file to begin.")
+    st.info("Upload a music or voice audio file to begin equalization.")
