@@ -1,3 +1,4 @@
+import matplotlib as plt
 import streamlit as st
 import numpy as np
 import scipy.signal as signal
